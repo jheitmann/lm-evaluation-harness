@@ -710,6 +710,8 @@ class Task(abc.ABC):
                 if len(sampled_indices) == k:
                     break
 
+        # Shuffle examples so that there is no distinct pattern
+        rnd.shuffle(sampled_indices)
         samples = self._training_docs.select(sampled_indices)
 
         samples = list(samples)
