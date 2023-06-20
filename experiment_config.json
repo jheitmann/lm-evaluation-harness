@@ -1,0 +1,54 @@
+{
+  "pawsx_de": {
+    "balanced": true,
+    "n_tokens_75": 85,
+    "num_classes": 2,
+    "fewshots_mul": [
+      0,
+      1,
+      2,
+      7
+    ]
+  },
+  "xnli_de": {
+    "balanced": true,
+    "n_tokens_75": 66,
+    "num_classes": 3,
+    "fewshots_mul": [
+      0,
+      1,
+      2,
+      6
+    ]
+  },
+  "xstance_de": {
+    "balanced": true,
+    "n_tokens_75": 100,
+    "num_classes": 2,
+    "fewshots_mul": [
+      0,
+      1,
+      2,
+      6
+    ]
+  },
+  "germeval2017": {
+    "balanced": true,
+    "n_tokens_75": 103,
+    "num_classes": 3,
+    "fewshots_mul": [
+      0,
+      1,
+      2,
+      4
+    ]
+  },
+  "txsum": {
+    "balanced": false,
+    "n_tokens_75": 1253,
+    "num_classes": 0,
+    "fewshots_mul": [
+      0
+    ]
+  }
+}

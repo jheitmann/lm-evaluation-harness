@@ -61,6 +61,11 @@ from . import pawsx
 from . import xnli
 from . import mgsm
 
+
+from . import x_stance
+from . import germeval2017
+from . import txsum
+
 ########################################
 # Translation tasks
 ########################################
@@ -325,6 +330,10 @@ TASK_REGISTRY = {
     **pawsx.construct_tasks(),
     **xnli.construct_tasks(),
     **mgsm.construct_tasks(),
+    # German Benchmarks
+    "xstance_de": x_stance.XStanceDE,
+    "germeval2017": germeval2017.GermEval2017,
+    "txsum": txsum.TXSum,
 }
 
 

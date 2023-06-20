@@ -1,6 +1,7 @@
 import abc
 from typing import Iterable
 import numpy as np
+import pandas as pd
 import random
 import re
 import os
@@ -119,12 +120,6 @@ class LM(abc.ABC):
 
 
 class BaseLM(LM):
-    def __init__(self):
-        super().__init__()
-        self.batch_schedule = 1
-        self.batch_sizes = {}
-        self.max_batch_size = 512
-
     @property
     @abstractmethod
     def eot_token_id(self):
@@ -173,26 +168,6 @@ class BaseLM(LM):
         """
         pass
 
-    def _detect_batch_size(self, requests=None, pos=0):
-        if requests:
-            _, context_enc, continuation_enc = requests[pos]
-            max_length = len((context_enc + continuation_enc)[-(self.max_length + 1) :][:-1])
-        else:
-            max_length = self.max_length
-
-        # if OOM, then halves batch_size and tries again
-        @find_executable_batch_size(starting_batch_size=self.max_batch_size)
-        def forward_batch(batch_size):
-            test_batch = torch.ones((batch_size, max_length), device=self.device).long()
-            for _ in range(5):
-                _ = F.log_softmax(self._model_call(test_batch), dim=-1).cpu()
-            return batch_size
-
-        batch_size = forward_batch()
-        utils.clear_torch_cache()
-
-        return batch_size
-
     # subclass must implement properties vocab_size, eot_token_id, max_gen_toks, batch_size, device, max_length.
     # TODO: enforce this somehow
 
@@ -212,7 +187,9 @@ class BaseLM(LM):
         for context, continuation in requests:
             if context == "":
                 # end of text as context
-                context_enc, continuation_enc = [self.eot_token_id], self.tok_encode(continuation)
+                context_enc, continuation_enc = [self.eot_token_id], self.tok_encode(
+                    continuation
+                )
             else:
                 context_enc, continuation_enc = self._encode_pair(context, continuation)
 
@@ -228,7 +205,19 @@ class BaseLM(LM):
         if self.batch_size == "auto":
             # using rolling window with maximum context
             print("Passed argument batch_size = auto. Detecting largest batch size")
-            batch_size = self._detect_batch_size()
+
+            @find_executable_batch_size(
+                starting_batch_size=512
+            )  # if OOM, then halves batch_size and tries again
+            def forward_batch(batch_size):
+                test_batch = torch.ones(
+                    (batch_size, self.max_length), device=self.device
+                ).long()
+                for _ in range(5):
+                    _ = F.log_softmax(self._model_call(test_batch), dim=-1).cpu()
+                return batch_size
+
+            batch_size = forward_batch()
             print(f"Determined Largest batch size: {batch_size}")
             adaptive_batch_size = batch_size
 
@@ -281,24 +270,44 @@ class BaseLM(LM):
 
         re_ord = utils.Reorderer(requests, _collate)
 
-        reordered_requests = re_ord.get_reordered()
-        n_reordered_requests = len(reordered_requests)
-
         # automatic (variable) batch size detection for vectorization
         # pull longest context sample from request
-        def _batch_scheduler(pos):
-            sched = pos // int(n_reordered_requests / self.batch_schedule)
-            if sched in self.batch_sizes:
-                return self.batch_sizes[sched]
-            print(f"Passed argument batch_size = auto:{self.batch_schedule}. Detecting largest batch size")
-            self.batch_sizes[sched] = self._detect_batch_size(reordered_requests, pos)
-            print(f"Determined largest batch size: {self.batch_sizes[sched]}")
-            return self.batch_sizes[sched]
+        if len(re_ord.get_reordered()) > 0:
+            _, context_enc, continuation_enc = re_ord.get_reordered()[0]
+            max_context = len(
+                (context_enc + continuation_enc)[-(self.max_length + 1) :][:-1]
+            )
+            if self.batch_size == "auto":
+                if override_bs is None:
+                    print(
+                        "Passed argument batch_size = auto. Detecting largest batch size"
+                    )
+
+                    @find_executable_batch_size(
+                        starting_batch_size=512
+                    )  # if OOM, then halves batch_size and tries again
+                    def forward_batch(batch_size):
+                        test_batch = torch.ones(
+                            (batch_size, max_context), device=self.device
+                        ).long()
+                        for _ in range(5):
+                            out = F.log_softmax(
+                                self._model_call(test_batch), dim=-1
+                            ).cpu()
+                        return batch_size
+
+                    batch_size = forward_batch()
+                    print(f"Determined largest batch size: {batch_size}")
+                    adaptive_batch_size = batch_size
+
+                else:
+                    adaptive_batch_size = override_bs
+        else:
+            adaptive_batch_size = 0 if override_bs is None else override_bs
 
         for chunk in utils.chunks(
-            tqdm(reordered_requests, disable=disable_tqdm),
-            n=self.batch_size if self.batch_size != "auto" else override_bs if override_bs is not None else 0,
-            fn=_batch_scheduler if self.batch_size == "auto" and n_reordered_requests > 0 else None,
+            tqdm(re_ord.get_reordered(), disable=disable_tqdm),
+            self.batch_size if self.batch_size != "auto" else adaptive_batch_size,
         ):
             inps = []
             cont_toks_list = []
@@ -360,7 +369,6 @@ class BaseLM(LM):
             for (cache_key, _, _), logits, inp, inplen, cont_toks in zip(
                 chunk, multi_logits, inps, inplens, cont_toks_list
             ):
-
                 # Slice to original seq length
                 contlen = len(cont_toks)
                 logits = logits[inplen - contlen : inplen].unsqueeze(
@@ -482,6 +490,61 @@ class Task(abc.ABC):
         self._training_docs = None
         self._fewshot_docs = None
 
+    def _get_cache_path(self, args, kwargs, cache_dir):
+        """Return the path of the cached version of the task dataset.
+        :param args: tuple
+            Positional arguments passed to `datasets.load_dataset`.
+        :param kwargs: dict[str, Any]
+            Keyword arguments passed to `datasets.load_dataset`.
+        :param cache_dir: Union[str, Path, None]
+            The directory to read/write the `Task` dataset from/to. This
+            follows the HuggingFace `datasets` API with the default
+            cache directory located at:
+                `~/.cache/huggingface/datasets`
+            NOTE: You can change the cache location globally for a given
+            process by setting the shell environment variable,
+            `HF_DATASETS_CACHE`, to another directory:
+                `export HF_DATASETS_CACHE="/path/to/another/directory"`
+        """
+        if not cache_dir:
+            cache_dir = datasets.config.HF_DATASETS_CACHE
+        cache_name = self._get_cache_name(args, kwargs)
+        return os.path.join(cache_dir, cache_name)
+
+    def _get_cache_name(self, args, kwargs):
+        """Return the file name of the cached version of the task dataset.
+        :param args: tuple
+            Positional arguments passed to `datasets.load_dataset`.
+        :param kwargs: dict[str, Any]
+            Keyword arguments passed to `datasets.load_dataset`.
+        """
+        assert isinstance(args, tuple) and isinstance(kwargs, dict), (
+            "positional arguments must be tuple and keyword arguments must "
+            "be dictionary for getting cache name"
+        )
+        # Try to get the `path`.
+        if args:
+            name = args[0]
+        elif "path" in kwargs:
+            name = kwargs["path"]
+        elif self.DATASET_PATH:
+            name = self.DATASET_PATH
+        # Try to get the `name`.
+        elif len(args) > 1:
+            name = args[1]
+        elif "name" in kwargs:
+            name = kwargs["name"]
+        elif self.DATASET_NAME:
+            name = self.DATASET_NAME
+        else:
+            raise ValueError("cannot find a dataset name")
+
+        # Similar to what the usual `datasets` caching does.
+        name = name.replace("/", "--").replace("\0", "-0-")
+        hasher = datasets.fingerprint.Hasher()
+        hashed_all_args = hasher.hash((args, kwargs))
+        return f"{name}_{hashed_all_args}"
+
     def download(self, data_dir=None, cache_dir=None, download_mode=None):
         """Downloads and returns the task dataset.
         Override this method to download the dataset from a custom API.
@@ -514,6 +577,64 @@ class Task(abc.ABC):
             cache_dir=cache_dir,
             download_mode=download_mode,
         )
+
+    def _download_pushed(
+        self,
+        args,
+        kwargs,
+        data_dir=None,
+        cache_dir=None,
+        download_mode=None,
+    ):
+        """Download and assign a task dataset that was pushed to the hub
+        (i.e. the usual `download` API does not work in offline mode).
+        See https://github.com/huggingface/datasets/issues/3547.
+        :param args: tuple
+            Positional arguments passed to `datasets.load_dataset`.
+        :param kwargs: dict[str, Any]
+            Keyword arguments passed to `datasets.load_dataset`.
+        :param data_dir: Optional[str]
+            Stores the path to a local folder containing the `Task`'s data files.
+            Use this to specify the path to manually downloaded data (usually when
+            the dataset is not publicly accessible).
+        :param cache_dir: Optional[str]
+            The directory to read/write the `Task` dataset. This follows the
+            HuggingFace `datasets` API with the default cache directory located at:
+                `~/.cache/huggingface/datasets`
+            NOTE: You can change the cache location globally for a given process
+            by setting the shell environment variable, `HF_DATASETS_CACHE`,
+            to another directory:
+                `export HF_DATASETS_CACHE="/path/to/another/directory"`
+        :param download_mode: Optional[datasets.DownloadMode]
+            How to treat pre-existing `Task` downloads and data.
+            - `datasets.DownloadMode.REUSE_DATASET_IF_EXISTS`
+                Reuse download and reuse dataset.
+            - `datasets.DownloadMode.REUSE_CACHE_IF_EXISTS`
+                Reuse download with fresh dataset.
+            - `datasets.DownloadMode.FORCE_REDOWNLOAD`
+                Fresh download and fresh dataset.
+        """
+        if "data_dir" in kwargs:
+            data_dir = kwargs.pop("data_dir")
+        if "cache_dir" in kwargs:
+            cache_dir = kwargs.pop("cache_dir")
+        if "download_mode" in kwargs:
+            download_mode = kwargs.pop("download_mode")
+
+        cached_path = self._get_cache_path(args, kwargs, cache_dir)
+        if not datasets.config.HF_DATASETS_OFFLINE:
+            self.dataset = datasets.load_dataset(
+                *args,
+                data_dir=data_dir,
+                cache_dir=cache_dir,
+                download_mode=download_mode,
+                **kwargs,
+            )
+            # Primitive since we don't store a time stamp, but should be
+            # good enough.
+            self.dataset.save_to_disk(cached_path)
+        else:
+            self.dataset = datasets.load_from_disk(cached_path)
 
     def should_decontaminate(self):
         """Whether this task supports decontamination against model training set."""
@@ -566,11 +687,35 @@ class Task(abc.ABC):
         """
         return doc
 
-    def fewshot_examples(self, k, rnd):
+    def fewshot_examples_old(self, k, rnd):
         if self._training_docs is None:
             self._training_docs = list(self.training_docs())
-
         return rnd.sample(self._training_docs, k)
+
+    def fewshot_examples(self, k, rnd):
+        if self._training_docs is None:
+            self._training_docs = self.training_docs()
+
+        targets = self._training_docs.map(
+            lambda doc: {"target_val": self.doc_to_target(doc)}
+        )["target_val"]
+
+        target_df = pd.DataFrame({"index": range(len(targets)), "target": targets})
+        target_groups = target_df.groupby("target")["index"].apply(list)
+
+        sampled_indices = []
+        while len(sampled_indices) < k:
+            for indices in target_groups:
+                sampled_indices.append(rnd.sample(indices, 1)[0])
+                if len(sampled_indices) == k:
+                    break
+
+        samples = self._training_docs.select(sampled_indices)
+
+        samples = list(samples)
+
+        # return rnd.sample(self._training_docs, k)
+        return samples
 
     def doc_to_decontamination_query(self, doc):
         print(
@@ -868,10 +1013,6 @@ class CachingLM:
         lm.set_cache_hook(self.get_cache_hook())
 
     def __getattr__(self, attr):
-        lm_attr = getattr(self.lm, attr)
-        if not callable(lm_attr):
-            return lm_attr
-
         def fn(requests):
             res = []
             remaining_reqs = []
