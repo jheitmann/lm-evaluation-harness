@@ -226,7 +226,7 @@ class EthicsUtilitarianismOriginal(Ethics):
         # Rely on the fixed and labeled examples of `fewshot_examples` for the few-shot setting.
         return False
 
-    def fewshot_examples(self, k, rnd):
+    def fewshot_examples(self, k, rnd, stratified=True):
         # Overwriting fewshot examples as k can be max 5
         assert (
             k <= 5

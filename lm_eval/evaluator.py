@@ -191,28 +191,35 @@ def experiment_evaluate(
     for task_name, config in task_config.items():
         num_classes = config["num_classes"]
         fewshots_mul = config["fewshots_mul"]
+        with_context = config["with_context"]
 
         task = lm_eval.tasks.get_task(task_name)()
 
         for mul in fewshots_mul:
             num_fewshot = mul * num_classes
-            task_id = f"{task_name}_{num_fewshot}_shot"
-            task_dict = {task_id: task}
+            stratified_context = set([False])
+            if num_fewshot:
+                stratified_context.add(with_context)
 
-            task_results = evaluate(
-                lm=lm,
-                task_dict=task_dict,
-                num_fewshot=num_fewshot,
-                limit=limit,
-                bootstrap_iters=bootstrap_iters,
-                description_dict=description_dict,
-                decontamination_ngrams_path=decontamination_ngrams_path,
-                write_out=write_out,
-                output_base_path=output_base_path,
-            )
+            for stratified in stratified_context:
+                task_id = f"{task_name}_{num_fewshot}_shot_{'stratified' if stratified else 'random'}"
+                task_dict = {task_id: task}
 
-            results["results"][task_id] = task_results["results"][task_id]
-            results["versions"][task_id] = task_results["versions"][task_id]
+                task_results = evaluate(
+                    lm=lm,
+                    task_dict=task_dict,
+                    num_fewshot=num_fewshot,
+                    stratified=stratified,
+                    limit=limit,
+                    bootstrap_iters=bootstrap_iters,
+                    description_dict=description_dict,
+                    decontamination_ngrams_path=decontamination_ngrams_path,
+                    write_out=write_out,
+                    output_base_path=output_base_path,
+                )
+
+                results["results"][task_id] = task_results["results"][task_id]
+                results["versions"][task_id] = task_results["versions"][task_id]
 
     # add info about the model and few shot config
     results["config"] = {
@@ -226,10 +233,6 @@ def experiment_evaluate(
         "description_dict": description_dict,
     }
 
-    import pdb
-
-    pdb.set_trace()
-
     return results
 
 
@@ -242,6 +245,7 @@ def evaluate(
     task_dict,
     provide_description=None,
     num_fewshot=0,
+    stratified=True,
     limit=None,
     bootstrap_iters=100000,
     description_dict=None,
@@ -349,7 +353,11 @@ def evaluate(
 
             docs[(task_name, doc_id)] = doc
             ctx = task.fewshot_context(
-                doc=doc, num_fewshot=num_fewshot, rnd=rnd, description=description
+                doc=doc,
+                num_fewshot=num_fewshot,
+                stratified=stratified,
+                rnd=rnd,
+                description=description,
             )
             reqs = task.construct_requests(doc, ctx)
 

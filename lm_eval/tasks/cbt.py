@@ -85,11 +85,11 @@ class CBTBase(Task):
     def doc_to_target(self, doc):
         return ""
 
-    def fewshot_examples(self, k, rnd):
+    def fewshot_examples(self, k, rnd, stratified=True):
         assert (
             k == 0
         ), f"CBT is only implemented for the zero-shot setting. Given k={k}."
-        return super().fewshot_examples(k, rnd)
+        return super().fewshot_examples(k, rnd, stratified=stratified)
 
     def construct_requests(self, doc, ctx):
         """Uses RequestFactory to construct Requests and returns an iterable of

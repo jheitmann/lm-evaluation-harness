@@ -53,7 +53,7 @@ class NaturalQs(Task):
     def validation_docs(self):
         return self.dataset["validation"]
 
-    def fewshot_examples(self, k, rnd):
+    def fewshot_examples(self, k, rnd, stratified=True):
         # Data is too large to fit in memory. We just sample from the first bit.
         if self._training_docs is None:
             self._training_docs = list(islice(self.training_docs(), 0, 100000))

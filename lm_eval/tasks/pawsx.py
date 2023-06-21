@@ -87,7 +87,6 @@ class PAWSXBase(Task):
         return " " + [self.YES, self.NO][doc["label"]]
 
     def doc_to_fewshot_prompt(self, doc):
-
         prompt = self.doc_to_text(doc)
         return prompt.replace("[MASK]", self.doc_to_target(doc)[1:])
 
@@ -144,7 +143,13 @@ class PAWSXBase(Task):
 
     @utils.positional_deprecated
     def fewshot_context(
-        self, doc, num_fewshot, provide_description=None, rnd=None, description=None
+        self,
+        doc,
+        num_fewshot,
+        stratified=True,
+        provide_description=None,
+        rnd=None,
+        description=None,
     ):
         """Returns a fewshot context string that is made up of a prepended description
         (if provided), the `num_fewshot` number of examples, and an appended prompt example.
@@ -184,7 +189,9 @@ class PAWSXBase(Task):
         else:
             # for sets with no training docs, draw from other set *but ensure no overlap with current doc*
             if self.has_training_docs():
-                fewshotex = self.fewshot_examples(k=num_fewshot, rnd=rnd)
+                fewshotex = self.fewshot_examples(
+                    k=num_fewshot, rnd=rnd, stratified=stratified
+                )
             else:
                 if self._fewshot_docs is None:
                     self._fewshot_docs = list(

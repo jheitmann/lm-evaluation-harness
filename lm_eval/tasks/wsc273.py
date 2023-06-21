@@ -84,7 +84,7 @@ class WinogradSchemaChallenge273(Task):
             return option.replace(pronoun, pronoun.lower())
         return option
 
-    def fewshot_examples(self, k, rnd):
+    def fewshot_examples(self, k, rnd, stratified=True):
         # NOTE: `super().fewshot_examples` samples from training docs which are
         # not available for this test-set-only dataset.
 

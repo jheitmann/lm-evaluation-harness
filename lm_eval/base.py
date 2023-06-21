@@ -687,36 +687,33 @@ class Task(abc.ABC):
         """
         return doc
 
-    def fewshot_examples_old(self, k, rnd):
-        if self._training_docs is None:
-            self._training_docs = list(self.training_docs())
-        return rnd.sample(self._training_docs, k)
-
-    def fewshot_examples(self, k, rnd):
+    def fewshot_examples(self, k, rnd, stratified=True):
         if self._training_docs is None:
             self._training_docs = self.training_docs()
 
-        targets = self._training_docs.map(
-            lambda doc: {"target_val": self.doc_to_target(doc)}
-        )["target_val"]
+        sampled_indices = rnd.sample(range(len(self._training_docs)), k)
 
-        target_df = pd.DataFrame({"index": range(len(targets)), "target": targets})
-        target_groups = target_df.groupby("target")["index"].apply(list)
+        if stratified:
+            targets = self._training_docs.map(
+                lambda doc: {"target_val": self.doc_to_target(doc)}
+            )["target_val"]
 
-        sampled_indices = []
-        while len(sampled_indices) < k:
-            for indices in target_groups:
-                sampled_indices.append(rnd.sample(indices, 1)[0])
-                if len(sampled_indices) == k:
-                    break
+            target_df = pd.DataFrame({"index": range(len(targets)), "target": targets})
+            target_groups = target_df.groupby("target")["index"].apply(list)
 
-        # Shuffle examples so that there is no distinct pattern
-        rnd.shuffle(sampled_indices)
+            sampled_indices = []
+            while len(sampled_indices) < k:
+                for indices in target_groups:
+                    sampled_indices.append(rnd.sample(indices, 1)[0])
+                    if len(sampled_indices) == k:
+                        break
+
+            # Shuffle examples so that there is no distinct pattern
+            rnd.shuffle(sampled_indices)
+
         samples = self._training_docs.select(sampled_indices)
-
         samples = list(samples)
 
-        # return rnd.sample(self._training_docs, k)
         return samples
 
     def doc_to_decontamination_query(self, doc):
@@ -790,7 +787,13 @@ class Task(abc.ABC):
 
     @utils.positional_deprecated
     def fewshot_context(
-        self, doc, num_fewshot, provide_description=None, rnd=None, description=None
+        self,
+        doc,
+        num_fewshot,
+        stratified=True,
+        provide_description=None,
+        rnd=None,
+        description=None,
     ):
         """Returns a fewshot context string that is made up of a prepended description
         (if provided), the `num_fewshot` number of examples, and an appended prompt example.
@@ -830,7 +833,9 @@ class Task(abc.ABC):
         else:
             # for sets with no training docs, draw from other set *but ensure no overlap with current doc*
             if self.has_training_docs():
-                fewshotex = self.fewshot_examples(k=num_fewshot, rnd=rnd)
+                fewshotex = self.fewshot_examples(
+                    k=num_fewshot, rnd=rnd, stratified=stratified
+                )
             else:
                 if self._fewshot_docs is None:
                     self._fewshot_docs = list(
@@ -902,7 +907,7 @@ class PerplexityTask(Task, abc.ABC):
     def has_training_docs(self):
         return False
 
-    def fewshot_examples(self, k, rnd):
+    def fewshot_examples(self, k, rnd, stratified=True):
         assert k == 0
         return []
 
